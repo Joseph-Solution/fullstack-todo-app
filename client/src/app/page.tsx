@@ -2,10 +2,12 @@
 
 import { useState, useEffect } from 'react';
 
-// 定义 API 的基础 URL
-const API_BASE_URL = 'http://localhost:3001/api';
+// 使用相对路径，这样它会自动使用当前网站的域名
+const API_BASE_URL = '/api';
 
-// 定义单个任务的数据类型
+// ... 文件的其余部分保持不变 ...
+// (下面的代码和你之前的版本是一样的，但为了完整性，请全部复制)
+
 interface Todo {
   id: number;
   text: string;
@@ -13,13 +15,9 @@ interface Todo {
 }
 
 export default function HomePage() {
-  // 任务列表的状态，初始为空数组
   const [todos, setTodos] = useState<Todo[]>([]);
-  // 输入框文本的状态
   const [inputText, setInputText] = useState('');
 
-  // --- 数据获取 ---
-  // 使用 useEffect 在组件首次加载时从后端获取所有任务
   useEffect(() => {
     const fetchTodos = async () => {
       try {
@@ -32,11 +30,8 @@ export default function HomePage() {
     };
 
     fetchTodos();
-  }, []); // 空依赖数组表示这个 effect 只运行一次
+  }, []);
 
-  // --- 事件处理函数 ---
-
-  // 处理添加新任务
   const handleAddTask = async (e: React.FormEvent) => {
     e.preventDefault();
     if (inputText.trim() === '') return;
@@ -48,14 +43,13 @@ export default function HomePage() {
         body: JSON.stringify({ text: inputText }),
       });
       const newTodo = await response.json();
-      setTodos([...todos, newTodo]); // 将返回的新任务添加到列表中
-      setInputText(''); // 清空输入框
+      setTodos([...todos, newTodo]);
+      setInputText('');
     } catch (error) {
       console.error('Failed to add todo:', error);
     }
   };
 
-  // 处理切换任务完成状态
   const handleToggleTask = async (id: number) => {
     const todoToUpdate = todos.find(todo => todo.id === id);
     if (!todoToUpdate) return;
@@ -75,13 +69,12 @@ export default function HomePage() {
     }
   };
 
-  // 处理删除任务
   const handleDeleteTask = async (id: number) => {
     try {
       await fetch(`${API_BASE_URL}/todos/${id}`, {
         method: 'DELETE',
       });
-      setTodos(todos.filter(todo => todo.id !== id)); // 从列表中移除任务
+      setTodos(todos.filter(todo => todo.id !== id));
     } catch (error) {
       console.error('Failed to delete todo:', error);
     }
