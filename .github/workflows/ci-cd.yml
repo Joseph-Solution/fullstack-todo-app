@@ -1,4 +1,3 @@
-# Forcing a workflow update
 name: CI/CD Pipeline - Build and Push to ECR
 
 on:
