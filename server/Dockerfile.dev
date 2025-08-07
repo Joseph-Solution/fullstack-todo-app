@@ -1,0 +1,7 @@
+FROM oven/bun:1.0
+WORKDIR /app
+# 安装依赖 (如果 package.json 变化，会重新执行)
+COPY package.json bun.lockb* ./
+RUN bun install
+# 直接运行一个保持容器存活的命令
+CMD ["tail", "-f", "/dev/null"]
