@@ -1,7 +1,7 @@
 # 使用更新、更稳定的 Bun 版本
 FROM oven/bun:1.1
 WORKDIR /app
-# 复制一个临时的 package.json 来安装bun-types，以便后续开发
+# 复制一个临时的 package.json 来安装bun-types
 COPY package.json bun.lockb* ./
 RUN bun install
 CMD ["tail", "-f", "/dev/null"]

@@ -1,103 +1,151 @@
-import Image from "next/image";
+'use client';
 
-export default function Home() {
+import { useState, useEffect } from 'react';
+
+// 定义 API 的基础 URL
+const API_BASE_URL = 'http://localhost:3001/api';
+
+// 定义单个任务的数据类型
+interface Todo {
+  id: number;
+  text: string;
+  completed: boolean;
+}
+
+export default function HomePage() {
+  // 任务列表的状态，初始为空数组
+  const [todos, setTodos] = useState<Todo[]>([]);
+  // 输入框文本的状态
+  const [inputText, setInputText] = useState('');
+
+  // --- 数据获取 ---
+  // 使用 useEffect 在组件首次加载时从后端获取所有任务
+  useEffect(() => {
+    const fetchTodos = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/todos`);
+        const data = await response.json();
+        setTodos(data);
+      } catch (error) {
+        console.error('Failed to fetch todos:', error);
+      }
+    };
+
+    fetchTodos();
+  }, []); // 空依赖数组表示这个 effect 只运行一次
+
+  // --- 事件处理函数 ---
+
+  // 处理添加新任务
+  const handleAddTask = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (inputText.trim() === '') return;
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/todos`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: inputText }),
+      });
+      const newTodo = await response.json();
+      setTodos([...todos, newTodo]); // 将返回的新任务添加到列表中
+      setInputText(''); // 清空输入框
+    } catch (error) {
+      console.error('Failed to add todo:', error);
+    }
+  };
+
+  // 处理切换任务完成状态
+  const handleToggleTask = async (id: number) => {
+    const todoToUpdate = todos.find(todo => todo.id === id);
+    if (!todoToUpdate) return;
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/todos/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ completed: !todoToUpdate.completed }),
+      });
+      const updatedTodo = await response.json();
+      setTodos(
+        todos.map(todo => (todo.id === id ? updatedTodo : todo))
+      );
+    } catch (error) {
+      console.error('Failed to toggle todo:', error);
+    }
+  };
+
+  // 处理删除任务
+  const handleDeleteTask = async (id: number) => {
+    try {
+      await fetch(`${API_BASE_URL}/todos/${id}`, {
+        method: 'DELETE',
+      });
+      setTodos(todos.filter(todo => todo.id !== id)); // 从列表中移除任务
+    } catch (error) {
+      console.error('Failed to delete todo:', error);
+    }
+  };
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+    <main className="flex min-h-screen flex-col items-center p-24 bg-gray-900 text-white">
+      <div className="w-full max-w-md">
+        <h1 className="text-5xl font-bold text-center mb-8 text-cyan-400">
+          Todo List
+        </h1>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+        <form onSubmit={handleAddTask} className="flex gap-4 mb-8">
+          <input
+            type="text"
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            placeholder="从数据库添加任务..."
+            className="flex-grow p-3 rounded-lg bg-gray-800 border border-gray-700 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+          />
+          <button
+            type="submit"
+            className="bg-cyan-500 hover:bg-cyan-600 text-white font-bold py-3 px-6 rounded-lg transition-colors"
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+            添加
+          </button>
+        </form>
+
+        <div className="space-y-4">
+          {todos.map((todo) => (
+            <div
+              key={todo.id}
+              className="flex items-center justify-between p-4 bg-gray-800 rounded-lg shadow"
+            >
+              <span
+                className={`text-lg cursor-pointer ${
+                  todo.completed ? 'line-through text-gray-500' : ''
+                }`}
+                onClick={() => handleToggleTask(todo.id)}
+              >
+                {todo.text}
+              </span>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => handleToggleTask(todo.id)}
+                  className={
+                    todo.completed
+                      ? 'text-yellow-500 hover:text-yellow-400'
+                      : 'text-green-500 hover:text-green-400'
+                  }
+                >
+                  {todo.completed ? '撤销' : '完成'}
+                </button>
+                <button
+                  onClick={() => handleDeleteTask(todo.id)}
+                  className="text-red-500 hover:text-red-400"
+                >
+                  删除
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
+      </div>
+    </main>
   );
 }
