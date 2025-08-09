@@ -13,7 +13,16 @@ read_env() {
   local key="$1"
   local val=""
   if [ -f .env ]; then
-    val=$(grep -E "^${key}=" .env | tail -n1 | cut -d= -f2- || true)
+    # First attempt: awk regex capture (robust to values containing '=')
+    val=$(awk -v k="$key" 'match($0, "^" k "=(.*)$", a) {v=a[1]} END{if (v) print v}' .env || true)
+    # Fallback: grep/cut (legacy)
+    if [ -z "$val" ]; then
+      val=$(grep -E "^${key}=" .env | tail -n1 | cut -d= -f2- || true)
+    fi
+    # Last resort: source .env in a subshell and read exported var
+    if [ -z "$val" ]; then
+      val=$(set -a; . ./.env 2>/dev/null || true; set +a; eval "printf '%s' \"\${$key-}\"")
+    fi
   fi
   if [ -z "${val}" ]; then
     val="${!key-}"
@@ -53,6 +62,12 @@ echo "Repo: $REPO"
 echo "Preparing to set secrets (normalized):"
 printf "  AWS_REGION=%s\n  AWS_ACCOUNT_ID=%s\n  ECR_REPOSITORY=%s\n  ECS_CLUSTER_NAME=%s\n  ECS_BACKEND_SERVICE_NAME=%s\n  ECS_FRONTEND_SERVICE_NAME=%s\n  ALB_DNS_NAME=%s\n" \
   "$AWS_REGION" "$AWS_ACCOUNT_ID" "$ECR_REPOSITORY" "$ECS_CLUSTER_NAME" "$ECS_BACKEND_SERVICE_NAME" "$ECS_FRONTEND_SERVICE_NAME" "${ALB_DNS_NAME:-}"
+
+# Validate critical values
+if [ -z "$ECR_REPOSITORY" ] || [ ${#ECR_REPOSITORY} -lt 2 ]; then
+  echo "ECR_REPOSITORY is invalid after normalization (value='$ECR_REPOSITORY'). Please set a valid repository name in .env (e.g., joseph-solution/fullstack-todo-app)." >&2
+  exit 1
+fi
 
 # Delete all existing secrets in the repo
 EXISTING=$(gh secret list --repo "$REPO" --json name -q '.[].name' || true)
