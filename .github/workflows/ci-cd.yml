@@ -1,23 +1,25 @@
-name: CI/CD Pipeline - Build and Push to ECR
+name: CI/CD Pipeline - Build and Deploy to AWS
 
 on:
   push:
     branches: [ release ]
 
 jobs:
-  build-and-push:
-    name: Build and Push Images
+  build-and-deploy:
+    name: Build and Deploy to AWS
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubActionsDeployer
           aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Login to Amazon ECR
@@ -32,6 +34,7 @@ jobs:
         run: |
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f server/Dockerfile ./server
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "BACKEND_IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_ENV
 
       - name: Build and push frontend image
         env:
@@ -41,3 +44,44 @@ jobs:
         run: |
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f client/Dockerfile ./client
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "FRONTEND_IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_ENV
+
+      - name: Update backend task definition
+        run: |
+          # 替换任务定义文件中的占位符
+          sed -i "s|ACCOUNT_ID|${{ secrets.AWS_ACCOUNT_ID }}|g" aws/task-definition-backend.json
+          sed -i "s|REGION|${{ secrets.AWS_REGION }}|g" aws/task-definition-backend.json
+          sed -i "s|REPOSITORY_NAME|${{ secrets.ECR_REPOSITORY }}|g" aws/task-definition-backend.json
+          sed -i "s|IMAGE_TAG|backend-${{ github.sha }}|g" aws/task-definition-backend.json
+
+      - name: Update frontend task definition
+        run: |
+          # 替换任务定义文件中的占位符
+          sed -i "s|ACCOUNT_ID|${{ secrets.AWS_ACCOUNT_ID }}|g" aws/task-definition-frontend.json
+          sed -i "s|REGION|${{ secrets.AWS_REGION }}|g" aws/task-definition-frontend.json
+          sed -i "s|REPOSITORY_NAME|${{ secrets.ECR_REPOSITORY }}|g" aws/task-definition-frontend.json
+          sed -i "s|IMAGE_TAG|frontend-${{ github.sha }}|g" aws/task-definition-frontend.json
+
+      - name: Deploy backend to ECS
+        run: |
+          # 注册新的任务定义
+          aws ecs register-task-definition --cli-input-json file://aws/task-definition-backend.json
+          
+          # 更新服务
+          aws ecs update-service \
+            --cluster ${{ secrets.ECS_CLUSTER_NAME }} \
+            --service ${{ secrets.ECS_BACKEND_SERVICE_NAME }} \
+            --task-definition todo-backend
+
+      - name: Deploy frontend to ECS
+        run: |
+          # 注册新的任务定义
+          aws ecs register-task-definition --cli-input-json file://aws/task-definition-frontend.json
+          
+          # 更新服务
+          aws ecs update-service \
+            --cluster ${{ secrets.ECS_CLUSTER_NAME }} \
+            --service ${{ secrets.ECS_FRONTEND_SERVICE_NAME }} \
+            --task-definition todo-frontend
+
+      # 暂不执行等待与健康检查（未扩容前副本为0，且可能尚无RDS）

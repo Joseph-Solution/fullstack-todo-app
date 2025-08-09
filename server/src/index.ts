@@ -16,12 +16,17 @@ const db = drizzle(client);
 
 // --- Express 应用设置 ---
 const app = express();
-app.use(cors()); // 允许跨域请求
-app.use(express.json()); // 解析 JSON 请求体
+app.use(cors());
+app.use(express.json());
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 5678;
 
 // --- API 路由 ---
+
+// GET /health - 专用的健康检查路由
+app.get('/health', (req, res) => {
+  res.status(200).send('OK'); // 只返回一个简单的成功响应
+});
 
 // GET /api/todos - 获取所有任务
 app.get('/api/todos', async (req, res) => {
@@ -34,7 +39,7 @@ app.get('/api/todos', async (req, res) => {
   }
 });
 
-// POST /api/todos - 创建一个新任务
+// ... 其他 API 路由保持不变 ...
 app.post('/api/todos', async (req, res) => {
   try {
     const { text } = req.body;
@@ -49,7 +54,6 @@ app.post('/api/todos', async (req, res) => {
   }
 });
 
-// PUT /api/todos/:id - 更新任务（切换完成状态）
 app.put('/api/todos/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -72,7 +76,6 @@ app.put('/api/todos/:id', async (req, res) => {
   }
 });
 
-// DELETE /api/todos/:id - 删除一个任务
 app.delete('/api/todos/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -82,7 +85,7 @@ app.delete('/api/todos/:id', async (req, res) => {
       .returning();
 
     if (deletedTodo) {
-      res.status(204).send(); // 204 No Content
+      res.status(204).send();
     } else {
       res.status(404).json({ error: 'Todo not found' });
     }

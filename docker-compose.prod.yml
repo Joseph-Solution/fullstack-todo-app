@@ -19,29 +19,27 @@ services:
   backend:
     build:
       context: ./server
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile
     ports:
       - "${BACKEND_PORT:-5678}:${BACKEND_PORT:-5678}"
-    volumes:
-      - ./server:/app
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://user:password@postgres:5432/tododb
+      NODE_ENV: production
       PORT: ${BACKEND_PORT:-5678}
 
   frontend:
     build:
       context: ./client
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile
     ports:
       - "${FRONTEND_PORT:-4567}:${FRONTEND_PORT:-4567}"
-    volumes:
-      - ./client:/app
     depends_on:
       - backend
     environment:
+      NODE_ENV: production
       PORT: ${FRONTEND_PORT:-4567}
       BACKEND_PORT: ${BACKEND_PORT:-5678}
 

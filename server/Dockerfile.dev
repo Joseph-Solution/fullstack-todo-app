@@ -4,4 +4,10 @@ WORKDIR /app
 # 复制一个临时的 package.json 来安装bun-types，以便后续开发
 COPY package.json bun.lockb* ./
 RUN bun install
-CMD ["tail", "-f", "/dev/null"]
+
+# 添加启动脚本
+COPY start-dev.sh ./
+RUN chmod +x start-dev.sh
+
+ENTRYPOINT []
+CMD ["/bin/sh", "./start-dev.sh"]

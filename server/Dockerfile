@@ -16,12 +16,19 @@ WORKDIR /app
 
 # 从构建阶段复制安装好的依赖
 COPY --from=builder /app/node_modules ./node_modules
-# 只复制编译后的代码和 package.json
+# 复制源代码和配置文件
 COPY --from=builder /app/src ./src
 COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/drizzle ./drizzle
+COPY --from=builder /app/drizzle.config.ts ./drizzle.config.ts
 
-# 暴露端口
-EXPOSE 3001
+# 创建启动脚本
+COPY start-prod.sh ./
+RUN chmod +x start-prod.sh
+
+# 暴露端口（与本地一致）
+EXPOSE 5678
 
 # 运行生产服务器的命令
-CMD ["bun", "src/index.ts"]
+ENTRYPOINT []
+CMD ["/bin/sh", "./start-prod.sh"]
