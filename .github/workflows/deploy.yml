@@ -26,16 +26,26 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Normalize inputs
+        env:
+          ECR_REPOSITORY_RAW: ${{ secrets.ECR_REPOSITORY }}
+          CLUSTER_RAW: ${{ secrets.ECS_CLUSTER_NAME }}
+          SVC_BACKEND_RAW: ${{ secrets.ECS_BACKEND_SERVICE_NAME }}
+          SVC_FRONTEND_RAW: ${{ secrets.ECS_FRONTEND_SERVICE_NAME }}
         run: |
-          set -euo pipefail
-          ECR_REPOSITORY_TRIM=$(printf "%s" "${{ secrets.ECR_REPOSITORY }}" | tr -d '\r' | sed 's/^[ \t]*//;s/[ \t]*$//')
-          CLUSTER_TRIM=$(printf "%s" "${{ secrets.ECS_CLUSTER_NAME }}" | tr -d '\r' | sed 's/^[ \t]*//;s/[ \t]*$//' | tr -d '"\'\'' )
-          SVC_BACKEND_TRIM=$(printf "%s" "${{ secrets.ECS_BACKEND_SERVICE_NAME }}" | tr -d '\r' | sed 's/^[ \t]*//;s/[ \t]*$//' | tr -d '"\'\'' )
-          SVC_FRONTEND_TRIM=$(printf "%s" "${{ secrets.ECS_FRONTEND_SERVICE_NAME }}" | tr -d '\r' | sed 's/^[ \t]*//;s/[ \t]*$//' | tr -d '"\'\'' )
-          echo "ECR_REPOSITORY_TRIM=$ECR_REPOSITORY_TRIM" >> $GITHUB_ENV
-          echo "ECS_CLUSTER_TRIM=$CLUSTER_TRIM" >> $GITHUB_ENV
-          echo "ECS_BACKEND_SERVICE_TRIM=$SVC_BACKEND_TRIM" >> $GITHUB_ENV
-          echo "ECS_FRONTEND_SERVICE_TRIM=$SVC_FRONTEND_TRIM" >> $GITHUB_ENV
+          python3 - <<'PY'
+          import os
+          def norm(s: str) -> str:
+              return s.replace('\r','').strip().strip('"').strip("'")
+          envs = {
+              'ECR_REPOSITORY_TRIM': norm(os.getenv('ECR_REPOSITORY_RAW','')),
+              'ECS_CLUSTER_TRIM': norm(os.getenv('CLUSTER_RAW','')),
+              'ECS_BACKEND_SERVICE_TRIM': norm(os.getenv('SVC_BACKEND_RAW','')),
+              'ECS_FRONTEND_SERVICE_TRIM': norm(os.getenv('SVC_FRONTEND_RAW','')),
+          }
+          with open(os.environ['GITHUB_ENV'],'a') as f:
+              for k,v in envs.items():
+                  f.write(f"{k}={v}\n")
+          PY
 
       - name: Compute image URIs
         run: |
