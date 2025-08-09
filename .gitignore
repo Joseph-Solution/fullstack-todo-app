@@ -52,7 +52,7 @@ test.py
 .vscode/
 
 # Allow infra scripts and task definitions under aws/
-!/aws/**
+/aws/dist/
 # But still ignore sensitive/generated items if any (add patterns below as needed)
 # Example:
 # /aws/.terraform/

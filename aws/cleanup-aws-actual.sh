@@ -1,111 +1,176 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# AWS 资源清理脚本 - 基于实际检测结果
-# 使用方法: ./cleanup-aws-actual.sh
+# AWS cleanup script for this project (idempotent)
+# Usage: ./cleanup-aws-actual.sh
 
-set -e
+set -euo pipefail
 
-echo "🔍 开始清理 AWS 资源..."
+echo "Starting AWS cleanup..."
 
-# 根据检测结果配置变量
+# Configuration based on detected resources
 REGION="ap-southeast-2"
-CLUSTER_NAME="todo-app-cluster"
-SERVICE_NAME="todo-app-service"  # 你只有一个服务
-ECR_REPOSITORY="joseph-solution/fullstack-todo-app"
 ACCOUNT_ID="248729599833"
+ECR_REPOSITORY="joseph-solution/fullstack-todo-app"
 
-echo "📍 区域: $REGION"
-echo "🆔 账户 ID: $ACCOUNT_ID"
+# Target ECS clusters to clean (as detected)
+TARGET_CLUSTERS=("todo-app-cluster" "-")
 
-# 1. 删除 ECS 服务
-echo "🐳 删除 ECS 服务..."
+echo "Region: $REGION"
+echo "Account: $ACCOUNT_ID"
 
-# 检查并删除服务
-if aws ecs describe-services --cluster $CLUSTER_NAME --services $SERVICE_NAME --region $REGION --query 'services[0].status' --output text 2>/dev/null | grep -q "ACTIVE"; then
-    echo "  删除服务: $SERVICE_NAME"
-    aws ecs update-service --cluster $CLUSTER_NAME --service $SERVICE_NAME --desired-count 0 --region $REGION
-    aws ecs wait services-stable --cluster $CLUSTER_NAME --services $SERVICE_NAME --region $REGION
-    aws ecs delete-service --cluster $CLUSTER_NAME --service $SERVICE_NAME --region $REGION
-else
-    echo "  服务不存在或已删除"
-fi
+# Helper: check if cluster exists
+cluster_exists() {
+  local name="$1"
+  aws ecs describe-clusters \
+    --region "$REGION" \
+    --clusters "$name" \
+    --query 'clusters[0].status' \
+    --output text 2>/dev/null | grep -qE 'ACTIVE|INACTIVE'
+}
 
-# 2. 删除 ECS 集群
-echo "🐳 删除 ECS 集群..."
-if aws ecs describe-clusters --clusters $CLUSTER_NAME --region $REGION --query 'clusters[0].status' --output text 2>/dev/null | grep -q "ACTIVE"; then
-    echo "  删除集群: $CLUSTER_NAME"
-    aws ecs delete-cluster --cluster $CLUSTER_NAME --region $REGION
-else
-    echo "  集群不存在或已删除"
-fi
-
-# 3. 删除任务定义
-echo "📋 删除任务定义..."
-# 删除所有相关的任务定义
-for revision in $(aws ecs list-task-definitions --region $REGION --query 'taskDefinitionArns[]' --output text 2>/dev/null); do
-    TASK_FAMILY=$(echo $revision | cut -d'/' -f2)
-    if [[ $TASK_FAMILY == *"todo"* ]] || [[ $TASK_FAMILY == *"app"* ]]; then
-        echo "  删除任务定义: $revision"
-        aws ecs deregister-task-definition --task-definition $revision --region $REGION
+# 1) Delete ECS services in target clusters
+echo "Deleting ECS services..."
+for cluster in "${TARGET_CLUSTERS[@]}"; do
+  if cluster_exists "$cluster"; then
+    echo "- Cluster: $cluster"
+    services=$(aws ecs list-services --cluster "$cluster" --region "$REGION" --query 'serviceArns[]' --output text 2>/dev/null || echo "")
+    if [ -n "${services:-}" ]; then
+      for svc_arn in $services; do
+        svc_name=$(echo "$svc_arn" | awk -F'/' '{print $NF}')
+        echo "  · Draining and deleting service: $svc_name"
+        # Set desired count to 0, wait stable, then delete
+        aws ecs update-service --cluster "$cluster" --service "$svc_name" --desired-count 0 --region "$REGION" >/dev/null 2>&1 || true
+        aws ecs wait services-stable --cluster "$cluster" --services "$svc_name" --region "$REGION" >/dev/null 2>&1 || true
+        aws ecs delete-service --cluster "$cluster" --service "$svc_name" --force --region "$REGION" >/dev/null 2>&1 || true
+      done
+    else
+      echo "  · No services in cluster"
     fi
+  else
+    echo "- Cluster not found (skip): $cluster"
+  fi
 done
 
-# 4. 删除 ECR 仓库中的镜像
-echo "📦 清理 ECR 仓库..."
-if aws ecr describe-repositories --repository-names $ECR_REPOSITORY --region $REGION >/dev/null 2>&1; then
-    echo "  删除 ECR 仓库中的所有镜像..."
-    
-    # 获取所有镜像标签
-    IMAGE_TAGS=$(aws ecr list-images --repository-name $ECR_REPOSITORY --region $REGION --query 'imageIds[].imageTag' --output text 2>/dev/null)
-    
-    if [ ! -z "$IMAGE_TAGS" ]; then
-        # 构建删除命令
-        DELETE_COMMAND="aws ecr batch-delete-image --repository-name $ECR_REPOSITORY --image-ids"
-        for tag in $IMAGE_TAGS; do
-            DELETE_COMMAND="$DELETE_COMMAND imageTag=$tag"
-        done
-        eval "$DELETE_COMMAND --region $REGION"
-        echo "  已删除镜像标签: $IMAGE_TAGS"
+# 2) Delete ALB listeners, ALB, and Target Groups
+echo "Deleting ALB/listeners/target groups..."
+ALB_ARN=$(aws elbv2 describe-load-balancers --region "$REGION" --names todo-app-alb --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || echo "None")
+if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
+  echo "- Found ALB: $ALB_ARN"
+  # Delete listeners first
+  LISTENERS=$(aws elbv2 describe-listeners --region "$REGION" --load-balancer-arn "$ALB_ARN" --query 'Listeners[].ListenerArn' --output text 2>/dev/null || echo "")
+  for lst in $LISTENERS; do
+    echo "  · Deleting listener: $lst"
+    aws elbv2 delete-listener --region "$REGION" --listener-arn "$lst" >/dev/null 2>&1 || true
+  done
+  # Delete ALB
+  echo "- Deleting ALB todo-app-alb"
+  aws elbv2 delete-load-balancer --region "$REGION" --load-balancer-arn "$ALB_ARN" >/dev/null 2>&1 || true
+  # Wait a bit for dependencies to detach
+  sleep 5
+else
+  echo "- ALB not found: todo-app-alb"
+fi
+
+# Delete target groups (backend and frontend)
+for tg_name in todo-backend-tg todo-frontend-tg; do
+  TG_ARN=$(aws elbv2 describe-target-groups --region "$REGION" --names "$tg_name" --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "None")
+  if [ -n "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
+    echo "- Deleting target group: $tg_name"
+    aws elbv2 delete-target-group --region "$REGION" --target-group-arn "$TG_ARN" >/dev/null 2>&1 || true
+  else
+    echo "- Target group not found: $tg_name"
+  fi
+done
+
+# 3) Delete ECS clusters
+echo "Deleting ECS clusters..."
+for cluster in "${TARGET_CLUSTERS[@]}"; do
+  if cluster_exists "$cluster"; then
+    echo "- Deleting cluster: $cluster"
+    aws ecs delete-cluster --cluster "$cluster" --region "$REGION" >/dev/null 2>&1 || true
+  else
+    echo "- Cluster not found (skip): $cluster"
+  fi
+done
+
+# 4) Deregister task definitions for known families
+echo "Deregistering task definitions..."
+for family in todo-backend todo-frontend; do
+  td_arns=$(aws ecs list-task-definitions --region "$REGION" --family-prefix "$family" --query 'taskDefinitionArns[]' --output text 2>/dev/null || echo "")
+  if [ -n "$td_arns" ]; then
+    for td in $td_arns; do
+      echo "- Deregister: $td"
+      aws ecs deregister-task-definition --task-definition "$td" --region "$REGION" >/dev/null 2>&1 || true
+    done
+  else
+    echo "- No task definitions for family: $family"
+  fi
+done
+
+# 5) Clean ECR repository
+echo "Cleaning ECR repository..."
+if aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" --region "$REGION" >/dev/null 2>&1; then
+  echo "- Deleting all images in $ECR_REPOSITORY"
+  image_ids=$(aws ecr list-images --repository-name "$ECR_REPOSITORY" --region "$REGION" --query 'imageIds[]' --output json 2>/dev/null || echo '[]')
+  if [ "$image_ids" != "[]" ]; then
+    aws ecr batch-delete-image --repository-name "$ECR_REPOSITORY" --image-ids "$image_ids" --region "$REGION" >/dev/null 2>&1 || true
+  fi
+  echo "- Deleting repository: $ECR_REPOSITORY"
+  aws ecr delete-repository --repository-name "$ECR_REPOSITORY" --force --region "$REGION" >/dev/null 2>&1 || true
+else
+  echo "- ECR repository not found: $ECR_REPOSITORY"
+fi
+
+# 6) Delete Secrets Manager secret used by the app
+echo "Deleting Secrets Manager secret..."
+SECRET_NAME="todo-database-url"
+if aws secretsmanager describe-secret --secret-id "$SECRET_NAME" --region "$REGION" >/dev/null 2>&1; then
+  echo "- Deleting secret: $SECRET_NAME"
+  aws secretsmanager delete-secret --secret-id "$SECRET_NAME" --force-delete-without-recovery --region "$REGION" >/dev/null 2>&1 || true
+else
+  echo "- Secret not found: $SECRET_NAME"
+fi
+
+# 7) Delete CloudWatch log groups
+echo "Deleting CloudWatch log groups..."
+for lg in /ecs/todo-backend /ecs/todo-frontend; do
+  if aws logs describe-log-groups --log-group-name-prefix "$lg" --region "$REGION" --query 'logGroups[0].logGroupName' --output text 2>/dev/null | grep -q "$lg"; then
+    echo "- Deleting log group: $lg"
+    aws logs delete-log-group --log-group-name "$lg" --region "$REGION" >/dev/null 2>&1 || true
+  else
+    echo "- Log group not found: $lg"
+  fi
+done
+
+# 8) Delete security groups (after ALB/ENIs are gone)
+echo "Deleting security groups..."
+DEFAULT_VPC=$(aws ec2 describe-vpcs --region "$REGION" --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "None")
+if [ -n "$DEFAULT_VPC" ] && [ "$DEFAULT_VPC" != "None" ]; then
+  for sg_name in todo-alb-sg todo-svc-sg; do
+    SG_ID=$(aws ec2 describe-security-groups --region "$REGION" --filters Name=vpc-id,Values="$DEFAULT_VPC" Name=group-name,Values="$sg_name" --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "None")
+    if [ -n "$SG_ID" ] && [ "$SG_ID" != "None" ]; then
+      echo "- Deleting security group: $sg_name ($SG_ID)"
+      # Retry a few times in case ENIs are still releasing
+      for i in {1..6}; do
+        if aws ec2 delete-security-group --group-id "$SG_ID" --region "$REGION" >/dev/null 2>&1; then
+          echo "  · Deleted: $sg_name"
+          break
+        else
+          echo "  · In use, retrying in 5s ($i/6)"
+          sleep 5
+        fi
+      done
     else
-        echo "  没有找到镜像"
+      echo "- Security group not found: $sg_name"
     fi
-    
-    # 删除仓库
-    echo "  删除 ECR 仓库: $ECR_REPOSITORY"
-    aws ecr delete-repository --repository-name $ECR_REPOSITORY --force --region $REGION
+  done
 else
-    echo "  ECR 仓库不存在"
+  echo "- Default VPC not found; skip SG deletion"
 fi
 
-# 5. 删除相关的 Secrets Manager 密钥
-echo "🔒 删除 Secrets Manager 密钥..."
-SECRETS=$(aws secretsmanager list-secrets --region $REGION --query 'SecretList[?contains(Name, `todo`) || contains(Name, `app`) || contains(Name, `database`)].Name' --output text 2>/dev/null || echo "")
-
-if [ ! -z "$SECRETS" ]; then
-    for secret in $SECRETS; do
-        echo "  删除密钥: $secret"
-        aws secretsmanager delete-secret --secret-id $secret --force-delete-without-recovery --region $REGION
-    done
-else
-    echo "  没有找到相关的密钥"
-fi
-
-# 6. 删除相关的 CloudWatch 日志组
-echo "📝 删除 CloudWatch 日志组..."
-LOG_GROUPS=$(aws logs describe-log-groups --region $REGION --query 'logGroups[?contains(logGroupName, `todo`) || contains(logGroupName, `app`) || contains(logGroupName, `ecs`)].logGroupName' --output text 2>/dev/null || echo "")
-
-if [ ! -z "$LOG_GROUPS" ]; then
-    for loggroup in $LOG_GROUPS; do
-        echo "  删除日志组: $loggroup"
-        aws logs delete-log-group --log-group-name $loggroup --region $REGION
-    done
-else
-    echo "  没有找到相关的日志组"
-fi
-
-echo "✅ AWS 资源清理完成！"
-echo ""
-echo "📋 下一步:"
-echo "1. 运行 setup-aws.sh 重新创建基础设施"
-echo "2. 配置 GitHub Secrets (注意区域改为 ap-southeast-2)"
-echo "3. 推送代码到 release 分支进行测试"
+echo "Cleanup completed."
+echo
+echo "Next steps:"
+echo "1) Run setup-aws.sh to recreate infrastructure"
+echo "2) Reconfigure GitHub secrets if needed"
+echo "3) Push to release branch to test"

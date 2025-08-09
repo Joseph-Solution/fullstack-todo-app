@@ -1,0 +1,87 @@
+name: Deploy to AWS ECS
+
+on:
+  push:
+    branches: [ release ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS (AK/SK)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Login to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Normalize inputs
+        run: |
+          set -euo pipefail
+          ECR_REPOSITORY_TRIM=$(printf "%s" "${{ secrets.ECR_REPOSITORY }}" | tr -d '\r' | sed 's/^[ \t]*//;s/[ \t]*$//')
+          CLUSTER_TRIM=$(printf "%s" "${{ secrets.ECS_CLUSTER_NAME }}" | tr -d '\r' | sed 's/^[ \t]*//;s/[ \t]*$//' | tr -d '"\'\'' )
+          SVC_BACKEND_TRIM=$(printf "%s" "${{ secrets.ECS_BACKEND_SERVICE_NAME }}" | tr -d '\r' | sed 's/^[ \t]*//;s/[ \t]*$//' | tr -d '"\'\'' )
+          SVC_FRONTEND_TRIM=$(printf "%s" "${{ secrets.ECS_FRONTEND_SERVICE_NAME }}" | tr -d '\r' | sed 's/^[ \t]*//;s/[ \t]*$//' | tr -d '"\'\'' )
+          echo "ECR_REPOSITORY_TRIM=$ECR_REPOSITORY_TRIM" >> $GITHUB_ENV
+          echo "ECS_CLUSTER_TRIM=$CLUSTER_TRIM" >> $GITHUB_ENV
+          echo "ECS_BACKEND_SERVICE_TRIM=$SVC_BACKEND_TRIM" >> $GITHUB_ENV
+          echo "ECS_FRONTEND_SERVICE_TRIM=$SVC_FRONTEND_TRIM" >> $GITHUB_ENV
+
+      - name: Compute image URIs
+        run: |
+          ECR_REGISTRY="${{ steps.login-ecr.outputs.registry }}"
+          BACKEND_TAG="backend-${{ github.sha }}"
+          FRONTEND_TAG="frontend-${{ github.sha }}"
+          echo "BACKEND_IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY_TRIM:$BACKEND_TAG" >> $GITHUB_ENV
+          echo "FRONTEND_IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY_TRIM:$FRONTEND_TAG" >> $GITHUB_ENV
+
+      - name: Build and push backend
+        run: |
+          docker build -t "$BACKEND_IMAGE_URI" -f server/Dockerfile ./server
+          docker push "$BACKEND_IMAGE_URI"
+
+      - name: Build and push frontend
+        run: |
+          docker build -t "$FRONTEND_IMAGE_URI" -f client/Dockerfile ./client
+          docker push "$FRONTEND_IMAGE_URI"
+
+      - name: Render task defs (backend)
+        run: |
+          sed -i "s|ACCOUNT_ID|${{ secrets.AWS_ACCOUNT_ID }}|g" aws/task-definition-backend.json
+          sed -i "s|REGION|${{ secrets.AWS_REGION }}|g" aws/task-definition-backend.json
+          sed -i "s|REPOSITORY_NAME|$ECR_REPOSITORY_TRIM|g" aws/task-definition-backend.json
+          sed -i "s|IMAGE_TAG|${{ github.sha }}|g" aws/task-definition-backend.json
+
+      - name: Render task defs (frontend)
+        run: |
+          sed -i "s|ACCOUNT_ID|${{ secrets.AWS_ACCOUNT_ID }}|g" aws/task-definition-frontend.json
+          sed -i "s|REGION|${{ secrets.AWS_REGION }}|g" aws/task-definition-frontend.json
+          sed -i "s|REPOSITORY_NAME|$ECR_REPOSITORY_TRIM|g" aws/task-definition-frontend.json
+          sed -i "s|IMAGE_TAG|${{ github.sha }}|g" aws/task-definition-frontend.json
+
+      - name: Register & update backend service
+        run: |
+          aws ecs register-task-definition --cli-input-json file://aws/task-definition-backend.json >/dev/null
+          aws ecs update-service --cluster "$ECS_CLUSTER_TRIM" --service "$ECS_BACKEND_SERVICE_TRIM" --task-definition todo-backend >/dev/null
+
+      - name: Register & update frontend service
+        run: |
+          aws ecs register-task-definition --cli-input-json file://aws/task-definition-frontend.json >/dev/null
+          aws ecs update-service --cluster "$ECS_CLUSTER_TRIM" --service "$ECS_FRONTEND_SERVICE_TRIM" --task-definition todo-frontend >/dev/null
+
+      - name: Scale services to 1 (first deploy)
+        run: |
+          aws ecs update-service --cluster "$ECS_CLUSTER_TRIM" --service "$ECS_BACKEND_SERVICE_TRIM" --desired-count 1 >/dev/null
+          aws ecs update-service --cluster "$ECS_CLUSTER_TRIM" --service "$ECS_FRONTEND_SERVICE_TRIM" --desired-count 1 >/dev/null
+
+

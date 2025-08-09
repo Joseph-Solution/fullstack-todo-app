@@ -70,15 +70,8 @@ if [ -z "$ECR_REPOSITORY" ] || [ ${#ECR_REPOSITORY} -lt 2 ]; then
 fi
 
 # Delete all existing secrets in the repo
-EXISTING=$(gh secret list --repo "$REPO" --json name -q '.[].name' || true)
-if [ -n "$EXISTING" ]; then
-  echo "$EXISTING" | while read -r name; do
-    [ -n "$name" ] && gh secret delete "$name" --repo "$REPO" -y || true
-  done
-  echo "Old secrets deleted."
-else
-  echo "No existing secrets to delete."
-fi
+# Skipping delete step for maximum gh CLI compatibility; set will upsert values
+echo "Skipping deletion of existing secrets (set is idempotent)."
 
 set_secret() {
   local key="$1" val="$2"
