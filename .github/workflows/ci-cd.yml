@@ -56,17 +56,26 @@ jobs:
           CLUSTER_RAW='${{ secrets.ECS_CLUSTER_NAME }}'
           SVC_BACKEND_RAW='${{ secrets.ECS_BACKEND_SERVICE_NAME }}'
           SVC_FRONTEND_RAW='${{ secrets.ECS_FRONTEND_SERVICE_NAME }}'
-          CLUSTER_TRIM=$(printf "%s" "$CLUSTER_RAW" | tr -d '\r' | sed 's/^[ \t]*//;s/[ \t]*$//')
-          SVC_BACKEND_TRIM=$(printf "%s" "$SVC_BACKEND_RAW" | tr -d '\r' | sed 's/^[ \t]*//;s/[ \t]*$//')
-          SVC_FRONTEND_TRIM=$(printf "%s" "$SVC_FRONTEND_RAW" | tr -d '\r' | sed 's/^[ \t]*//;s/[ \t]*$//')
+          # trim spaces/CR and strip any surrounding quotes
+          CLUSTER_TRIM=$(printf "%s" "$CLUSTER_RAW" | tr -d '\r' | sed 's/^[ \t]*//;s/[ \t]*$//' | tr -d '"' | tr -d "'")
+          SVC_BACKEND_TRIM=$(printf "%s" "$SVC_BACKEND_RAW" | tr -d '\r' | sed 's/^[ \t]*//;s/[ \t]*$//' | tr -d '"' | tr -d "'")
+          SVC_FRONTEND_TRIM=$(printf "%s" "$SVC_FRONTEND_RAW" | tr -d '\r' | sed 's/^[ \t]*//;s/[ \t]*$//' | tr -d '"' | tr -d "'")
+          if [ -z "$CLUSTER_TRIM" ]; then echo "ECS_CLUSTER_NAME is empty after normalization" >&2; exit 1; fi
           echo "ECS_CLUSTER_TRIM=$CLUSTER_TRIM" >> $GITHUB_ENV
           echo "ECS_BACKEND_SERVICE_TRIM=$SVC_BACKEND_TRIM" >> $GITHUB_ENV
           echo "ECS_FRONTEND_SERVICE_TRIM=$SVC_FRONTEND_TRIM" >> $GITHUB_ENV
 
       - name: Preflight - ensure cluster exists
         run: |
-          aws ecs describe-clusters --clusters "$ECS_CLUSTER_TRIM" >/dev/null 2>&1 || \
-          aws ecs create-cluster --cluster-name "$ECS_CLUSTER_TRIM" >/dev/null
+          set -euo pipefail
+          echo "Verifying ECS cluster '$ECS_CLUSTER_TRIM' in region $AWS_REGION"
+          if ! aws ecs describe-clusters --clusters "$ECS_CLUSTER_TRIM" --query 'clusters[?clusterName==`'"$ECS_CLUSTER_TRIM"'`].status' --output text | grep -q "ACTIVE"; then
+            echo "Cluster not found. Creating '$ECS_CLUSTER_TRIM'..."
+            aws ecs create-cluster --cluster-name "$ECS_CLUSTER_TRIM" >/dev/null
+          else
+            echo "Cluster exists."
+          fi
+          echo "Clusters now:" && aws ecs list-clusters --output text | cat
 
       - name: Build and push backend image
         run: |
