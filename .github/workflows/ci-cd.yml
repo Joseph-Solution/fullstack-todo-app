@@ -30,32 +30,43 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and push backend image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-          IMAGE_TAG: backend-${{ github.sha }}
+      - name: Ensure ECR repository exists and normalize name
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f server/Dockerfile ./server
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          echo "BACKEND_IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_ENV
+          ECR_REPOSITORY_RAW="${{ secrets.ECR_REPOSITORY }}"
+          # trim whitespace and remove CR characters
+          ECR_REPOSITORY_TRIM=$(printf "%s" "$ECR_REPOSITORY_RAW" | tr -d '\r' | sed 's/^[ \t]*//;s/[ \t]*$//')
+          if [ -z "$ECR_REPOSITORY_TRIM" ]; then
+            echo "ECR_REPOSITORY is empty after trim" >&2; exit 1;
+          fi
+          echo "ECR_REPOSITORY_TRIM=$ECR_REPOSITORY_TRIM" >> $GITHUB_ENV
+          # ensure repository exists
+          aws ecr describe-repositories --repository-names "$ECR_REPOSITORY_TRIM" >/dev/null 2>&1 || \
+          aws ecr create-repository --repository-name "$ECR_REPOSITORY_TRIM" >/dev/null
+
+      - name: Compute image URIs
+        run: |
+          ECR_REGISTRY="${{ steps.login-ecr.outputs.registry }}"
+          BACKEND_TAG="backend-${{ github.sha }}"
+          FRONTEND_TAG="frontend-${{ github.sha }}"
+          echo "BACKEND_IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY_TRIM:$BACKEND_TAG" >> $GITHUB_ENV
+          echo "FRONTEND_IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY_TRIM:$FRONTEND_TAG" >> $GITHUB_ENV
+
+      - name: Build and push backend image
+        run: |
+          docker build -t "$BACKEND_IMAGE_URI" -f server/Dockerfile ./server
+          docker push "$BACKEND_IMAGE_URI"
 
       - name: Build and push frontend image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-          IMAGE_TAG: frontend-${{ github.sha }}
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f client/Dockerfile ./client
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          echo "FRONTEND_IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_ENV
+          docker build -t "$FRONTEND_IMAGE_URI" -f client/Dockerfile ./client
+          docker push "$FRONTEND_IMAGE_URI"
 
       - name: Update backend task definition
         run: |
           # 替换任务定义文件中的占位符
           sed -i "s|ACCOUNT_ID|${{ secrets.AWS_ACCOUNT_ID }}|g" aws/task-definition-backend.json
           sed -i "s|REGION|${{ secrets.AWS_REGION }}|g" aws/task-definition-backend.json
-          sed -i "s|REPOSITORY_NAME|${{ secrets.ECR_REPOSITORY }}|g" aws/task-definition-backend.json
+          sed -i "s|REPOSITORY_NAME|$ECR_REPOSITORY_TRIM|g" aws/task-definition-backend.json
           sed -i "s|IMAGE_TAG|backend-${{ github.sha }}|g" aws/task-definition-backend.json
 
       - name: Update frontend task definition
@@ -63,7 +74,7 @@ jobs:
           # 替换任务定义文件中的占位符
           sed -i "s|ACCOUNT_ID|${{ secrets.AWS_ACCOUNT_ID }}|g" aws/task-definition-frontend.json
           sed -i "s|REGION|${{ secrets.AWS_REGION }}|g" aws/task-definition-frontend.json
-          sed -i "s|REPOSITORY_NAME|${{ secrets.ECR_REPOSITORY }}|g" aws/task-definition-frontend.json
+          sed -i "s|REPOSITORY_NAME|$ECR_REPOSITORY_TRIM|g" aws/task-definition-frontend.json
           sed -i "s|IMAGE_TAG|frontend-${{ github.sha }}|g" aws/task-definition-frontend.json
 
       - name: Deploy backend to ECS
