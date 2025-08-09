@@ -51,6 +51,23 @@ jobs:
           echo "BACKEND_IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY_TRIM:$BACKEND_TAG" >> $GITHUB_ENV
           echo "FRONTEND_IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY_TRIM:$FRONTEND_TAG" >> $GITHUB_ENV
 
+      - name: Normalize ECS names
+        run: |
+          CLUSTER_RAW='${{ secrets.ECS_CLUSTER_NAME }}'
+          SVC_BACKEND_RAW='${{ secrets.ECS_BACKEND_SERVICE_NAME }}'
+          SVC_FRONTEND_RAW='${{ secrets.ECS_FRONTEND_SERVICE_NAME }}'
+          CLUSTER_TRIM=$(printf "%s" "$CLUSTER_RAW" | tr -d '\r' | sed 's/^[ \t]*//;s/[ \t]*$//')
+          SVC_BACKEND_TRIM=$(printf "%s" "$SVC_BACKEND_RAW" | tr -d '\r' | sed 's/^[ \t]*//;s/[ \t]*$//')
+          SVC_FRONTEND_TRIM=$(printf "%s" "$SVC_FRONTEND_RAW" | tr -d '\r' | sed 's/^[ \t]*//;s/[ \t]*$//')
+          echo "ECS_CLUSTER_TRIM=$CLUSTER_TRIM" >> $GITHUB_ENV
+          echo "ECS_BACKEND_SERVICE_TRIM=$SVC_BACKEND_TRIM" >> $GITHUB_ENV
+          echo "ECS_FRONTEND_SERVICE_TRIM=$SVC_FRONTEND_TRIM" >> $GITHUB_ENV
+
+      - name: Preflight - ensure cluster exists
+        run: |
+          aws ecs describe-clusters --clusters "$ECS_CLUSTER_TRIM" >/dev/null 2>&1 || \
+          aws ecs create-cluster --cluster-name "$ECS_CLUSTER_TRIM" >/dev/null
+
       - name: Build and push backend image
         run: |
           docker build -t "$BACKEND_IMAGE_URI" -f server/Dockerfile ./server
@@ -67,7 +84,7 @@ jobs:
           sed -i "s|ACCOUNT_ID|${{ secrets.AWS_ACCOUNT_ID }}|g" aws/task-definition-backend.json
           sed -i "s|REGION|${{ secrets.AWS_REGION }}|g" aws/task-definition-backend.json
           sed -i "s|REPOSITORY_NAME|$ECR_REPOSITORY_TRIM|g" aws/task-definition-backend.json
-          sed -i "s|IMAGE_TAG|backend-${{ github.sha }}|g" aws/task-definition-backend.json
+          sed -i "s|IMAGE_TAG|${{ github.sha }}|g" aws/task-definition-backend.json
 
       - name: Update frontend task definition
         run: |
@@ -75,7 +92,7 @@ jobs:
           sed -i "s|ACCOUNT_ID|${{ secrets.AWS_ACCOUNT_ID }}|g" aws/task-definition-frontend.json
           sed -i "s|REGION|${{ secrets.AWS_REGION }}|g" aws/task-definition-frontend.json
           sed -i "s|REPOSITORY_NAME|$ECR_REPOSITORY_TRIM|g" aws/task-definition-frontend.json
-          sed -i "s|IMAGE_TAG|frontend-${{ github.sha }}|g" aws/task-definition-frontend.json
+          sed -i "s|IMAGE_TAG|${{ github.sha }}|g" aws/task-definition-frontend.json
 
       - name: Deploy backend to ECS
         run: |
@@ -84,8 +101,8 @@ jobs:
           
           # 更新服务
           aws ecs update-service \
-            --cluster ${{ secrets.ECS_CLUSTER_NAME }} \
-            --service ${{ secrets.ECS_BACKEND_SERVICE_NAME }} \
+            --cluster "$ECS_CLUSTER_TRIM" \
+            --service "$ECS_BACKEND_SERVICE_TRIM" \
             --task-definition todo-backend
 
       - name: Deploy frontend to ECS
@@ -95,8 +112,8 @@ jobs:
           
           # 更新服务
           aws ecs update-service \
-            --cluster ${{ secrets.ECS_CLUSTER_NAME }} \
-            --service ${{ secrets.ECS_FRONTEND_SERVICE_NAME }} \
+            --cluster "$ECS_CLUSTER_TRIM" \
+            --service "$ECS_FRONTEND_SERVICE_TRIM" \
             --task-definition todo-frontend
 
       # 暂不执行等待与健康检查（未扩容前副本为0，且可能尚无RDS）
